@@ -19,7 +19,22 @@
 - File Name Format: `inbox/conclusions/{{DATE:YYYY-MM-DD-HHmm}}-{{VALUE:title}}`
 - Template Path: `templates/quickadd/结论候选.md`
 
+## 聊天记录入库 Macro
+
+统一入口：`Inbox - 聊天记录入库`
+
+使用方式：
+
+1. 在微信、钉钉或其他聊天工具中复制聊天文本；如果不能复制多条消息，就截图并让截图留在剪贴板。
+2. 在 Obsidian 命令面板执行 QuickAdd 命令 `Inbox - 聊天记录入库`。
+3. 脚本会把内容写入 `inbox/quick/`，并生成 `Capture Time`、`Conversation Time`、`People`、`简短结论` 和原始记录。
+4. 如果剪贴板是截图，图片会保存到 `inbox/assets/chat/YYYY-MM/`；如果本机安装了 `tesseract`，会自动 OCR。
+
+可选增强：
+
+- OCR：`brew install tesseract tesseract-lang`
+- AI 总结：用环境变量 `OPENAI_API_KEY` 提供 OpenAI API Key。不要把 API Key 写入仓库文件。
+
 ## 原则
 
 QuickAdd 只负责低摩擦捕获，不直接写入 `wiki/`。整理时由 Codex 判断领域、归档 raw、沉淀 wiki、更新索引和交叉链接。
-

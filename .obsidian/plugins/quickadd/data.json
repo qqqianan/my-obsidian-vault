@@ -140,6 +140,29 @@
       "templater": {
         "afterCapture": "none"
       }
+    },
+    {
+      "id": "inbox-chat-capture",
+      "name": "Inbox - 聊天记录入库",
+      "type": "Macro",
+      "command": true,
+      "macro": {
+        "id": "inbox-chat-capture-macro",
+        "name": "Inbox - 聊天记录入库",
+        "commands": [
+          {
+            "id": "inbox-chat-capture-script",
+            "name": "读取剪贴板聊天记录",
+            "type": "UserScript",
+            "path": "templates/quickadd/scripts/capture-chat-to-inbox.js",
+            "settings": {
+              "model": "gpt-4o-mini",
+              "openaiApiKeyEnv": "OPENAI_API_KEY"
+            }
+          }
+        ]
+      },
+      "runOnStartup": false
     }
   ],
   "inputPrompt": "single-line",

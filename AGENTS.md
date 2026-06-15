@@ -9,6 +9,7 @@
 - inbox/quick/: 日常沟通速记
 - inbox/meetings/: 会议纪要
 - inbox/conclusions/: 结论候选
+- inbox/assets/chat/: 聊天截图等 inbox 临时附件
 - inbox/processed/: 已处理的 inbox 原文
 - raw/: 原始资料，按知识领域分目录，例如 `raw/llm-agent/`、`raw/telematics/`、`raw/computer-science/`
 - wiki/: 整理后的知识页，按知识领域分目录
@@ -44,6 +45,15 @@
 - 日常沟通速记：`inbox/quick/{{DATE:YYYY-MM-DD-HHmm}}-{{VALUE:title}}.md`
 - 会议纪要：`inbox/meetings/{{DATE:YYYY-MM-DD}}-{{VALUE:title}}.md`
 - 结论候选：`inbox/conclusions/{{DATE:YYYY-MM-DD-HHmm}}-{{VALUE:title}}.md`
+- 聊天记录入库：QuickAdd Macro `Inbox - 聊天记录入库`，读取剪贴板文本或截图，写入 `inbox/quick/`
+
+### 聊天记录捕获规则
+
+- 微信、钉钉等不能批量复制多条消息时，优先使用截图/OCR 捕获。
+- 捕获页必须保留 `Capture Time`；如果能从原文或 OCR 中识别时间，再填写 `Conversation Time`，否则写 `待确认`。
+- 捕获页可以尝试提取 `People`，但识别不到时写 `待确认`，整理时再人工或由 agent 修正。
+- 捕获页不猜领域，统一保持 `Domain: unknown`，整理 inbox 时再判断归属领域。
+- 截图原件先保存到 `inbox/assets/chat/`；整理入库时，再随原始记录一起归档到对应 `raw/<domain>/`。
 
 ### Inbox 整理规则
 
