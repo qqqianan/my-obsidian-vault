@@ -8,7 +8,8 @@
  * Optional:
  * - Install tesseract for OCR: brew install tesseract tesseract-lang
  * - Configure AI in secrets/chat-capture.local.json, or set OPENAI_API_KEY / OPENAI_BASE_URL.
- * - Configure audio transcription with audioBaseUrl/audioApiKey/audioModel, or reuse baseUrl/apiKey.
+ * - Audio transcription defaults to local Whisper-compatible service at http://127.0.0.1:9000/v1.
+ * - Configure audioBaseUrl/audioModel if your local Whisper service uses another port or path.
  */
 
 module.exports = async function captureChatToInbox(params, settings = {}) {
@@ -452,13 +453,13 @@ function copyAudioFile(fs, path, vaultPath, audioAbs, stamp, month) {
 async function transcribeAudio(audioAbs, settings, fs, path) {
   try {
     const env = typeof process !== "undefined" && process.env ? process.env : {};
-    const apiKeyEnv = settings.audioApiKeyEnv || settings.openaiApiKeyEnv || "OPENAI_API_KEY";
-    const baseUrlEnv = settings.audioBaseUrlEnv || settings.openaiBaseUrlEnv || "OPENAI_BASE_URL";
-    const apiKey = settings.audioApiKey || settings.apiKey || env[apiKeyEnv] || "";
-    if (!apiKey) return { status: "missing-audio-api-key", text: "" };
+    const apiKeyEnv = settings.audioApiKeyEnv || "WHISPER_API_KEY";
+    const baseUrlEnv = settings.audioBaseUrlEnv || "WHISPER_BASE_URL";
 
     const model = settings.audioModel || "whisper-1";
-    const baseUrl = normalizeBaseUrl(settings.audioBaseUrl || settings.baseUrl || env[baseUrlEnv] || "https://api.openai.com/v1");
+    const transcriptionsUrl = resolveAudioTranscriptionsUrl(settings, env[baseUrlEnv]);
+    const apiKey = settings.audioApiKey || env[apiKeyEnv] || "";
+    const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
     const fields = [
       { name: "model", value: model },
       { name: "response_format", value: settings.audioResponseFormat || "json" },
@@ -470,8 +471,8 @@ async function transcribeAudio(audioAbs, settings, fs, path) {
       fields.push({ name: "prompt", value: settings.audioPrompt });
     }
 
-    const response = await postMultipart(settings.nodeRequire, `${baseUrl}/audio/transcriptions`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+    const response = await postMultipart(settings.nodeRequire, transcriptionsUrl, {
+      headers,
       fields,
       file: {
         fieldName: "file",
@@ -491,6 +492,16 @@ async function transcribeAudio(audioAbs, settings, fs, path) {
   } catch (error) {
     return { status: `audio-request-failed: ${error.message || String(error)}`, text: "" };
   }
+}
+
+function resolveAudioTranscriptionsUrl(settings, envBaseUrl) {
+  if (settings.audioTranscriptionsUrl) {
+    return String(settings.audioTranscriptionsUrl).trim();
+  }
+  const rawBaseUrl = settings.audioBaseUrl || settings.audioLocalBaseUrl || envBaseUrl || "http://127.0.0.1:9000/v1";
+  const normalized = normalizeBaseUrl(rawBaseUrl);
+  if (/\/audio\/transcriptions$/i.test(normalized)) return normalized;
+  return `${normalized}/audio/transcriptions`;
 }
 
 function contentTypeForAudio(filePath) {

@@ -75,7 +75,9 @@
 - 捕获页可以尝试提取 `People`，但识别不到时写 `待确认`，整理时再人工或由 agent 修正。
 - 捕获页不猜领域，统一保持 `Domain: unknown`，整理 inbox 时再判断归属领域。
 - 录音附件先保存到 `inbox/assets/audio/`；整理入库时，再随原始记录一起归档到对应 `raw/<domain>/`。
-- 音频转写配置放在本机 `secrets/chat-capture.local.json`，不要把 API Key 写入仓库文件。
+- 语音转文字走本地转写工具，大模型只负责总结转写文本。
+- 自动化录音入库优先对接 whisper.cpp server 这类 Whisper-compatible HTTP 服务；MacWhisper 更适合手动转写导出文本后再录入 inbox。
+- 如本地 Whisper 服务端口或路径不是默认值，将 `audioBaseUrl` 或 `audioTranscriptionsUrl` 配置到本机 `secrets/chat-capture.local.json`，不要把 API Key 写入仓库文件。
 
 ### Inbox 整理规则
 

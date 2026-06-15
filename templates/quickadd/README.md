@@ -63,17 +63,25 @@
 
 ```json
 {
-  "baseUrl": "https://api.openai.com/v1",
-  "apiKey": "sk-REPLACE_WITH_LOCAL_KEY",
-  "model": "gpt-4o-mini",
-  "audioBaseUrl": "https://api.openai.com/v1",
-  "audioApiKey": "sk-REPLACE_WITH_LOCAL_AUDIO_KEY",
+  "baseUrl": "https://chat-model.example.com/v1",
+  "apiKey": "sk-REPLACE_WITH_LOCAL_SUMMARY_KEY",
+  "model": "summary-model",
+  "audioBaseUrl": "http://127.0.0.1:9000/v1",
+  "audioTranscriptionsUrl": "",
+  "audioApiKey": "",
   "audioModel": "whisper-1",
   "audioLanguage": "zh"
 }
 ```
 
-如果 `audioBaseUrl` 或 `audioApiKey` 不配置，脚本会复用 `baseUrl` 和 `apiKey`。`audioModel` 默认是 `whisper-1`，用于兼容 Whisper-compatible API。
+语音转文字使用本地转写工具，大模型只负责总结转写文本。当前脚本自动化对接的是 whisper.cpp server 这类 Whisper-compatible HTTP 服务，默认地址是 `http://127.0.0.1:9000/v1/audio/transcriptions`。
+
+如果本地 Whisper 服务不是 9000 端口，把 `audioBaseUrl` 改成实际地址，填写到 `/v1` 这一层即可；脚本会自动请求 `/audio/transcriptions`。如果服务直接给完整转写接口地址，可以填 `audioTranscriptionsUrl`。本地服务通常不需要 `audioApiKey`，需要鉴权时再填写。
+
+本地转写有两条路线：
+
+- whisper.cpp server：适合全自动入库。先启动本地 server，再执行 `Inbox - 最近录音入库` 或 `Inbox - 指定音频入库`。
+- MacWhisper：适合手动转写。先在 MacWhisper 中打开录音并导出 `.txt`，再把转写文本作为会议纪要或日常沟通录入 inbox；后续可以再加一个“转写文本入库”命令做半自动总结。
 
 ## 原则
 

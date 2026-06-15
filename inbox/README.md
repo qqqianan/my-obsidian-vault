@@ -53,4 +53,6 @@ Inbox - 最近录音入库
 Inbox - 指定音频入库
 ```
 
-音频转写配置放在 `secrets/chat-capture.local.json`，字段包括 `audioBaseUrl`、`audioApiKey`、`audioModel`。如果不配置音频专用字段，会复用 `baseUrl` 和 `apiKey`。
+语音转文字走本地转写工具，大模型只负责总结转写文本。自动化录音入库默认对接 whisper.cpp server 这类 Whisper-compatible HTTP 服务，地址是 `http://127.0.0.1:9000/v1/audio/transcriptions`。如果本地 Whisper 服务不是 9000 端口，在 `secrets/chat-capture.local.json` 里配置 `audioBaseUrl`；如果服务给的是完整转写接口地址，直接填写 `audioTranscriptionsUrl`。
+
+如果使用 MacWhisper，推荐先在 MacWhisper 中打开录音并导出 `.txt`，再把转写文本录入 inbox；MacWhisper 本身更偏桌面手动工具，不等同于脚本可直接调用的 HTTP 服务。
