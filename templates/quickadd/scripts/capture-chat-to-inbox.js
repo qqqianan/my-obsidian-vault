@@ -1,5 +1,5 @@
 /*
- * QuickAdd user script: capture chat text or screenshots into inbox.
+ * QuickAdd user script: capture chat text, screenshots, or meeting audio into inbox.
  *
  * Usage:
  * 1. Copy chat text, or copy a chat screenshot to the macOS clipboard.
@@ -8,6 +8,7 @@
  * Optional:
  * - Install tesseract for OCR: brew install tesseract tesseract-lang
  * - Configure AI in secrets/chat-capture.local.json, or set OPENAI_API_KEY / OPENAI_BASE_URL.
+ * - Configure audio transcription with audioBaseUrl/audioApiKey/audioModel, or reuse baseUrl/apiKey.
  */
 
 module.exports = async function captureChatToInbox(params, settings = {}) {
@@ -38,6 +39,24 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
   const textFromClipboard = (clipboard.readText() || "").trim();
   const image = clipboard.readImage();
   const hasImage = image && !image.isEmpty();
+
+  if (settings.mode === "capture-latest-audio" || settings.mode === "capture-audio-path") {
+    await captureAudioToInbox({
+      app,
+      fs,
+      path,
+      vaultPath,
+      effectiveSettings,
+      clipboardText: textFromClipboard,
+      captureTime,
+      stamp,
+      month,
+      Notice,
+      params,
+      mode: settings.mode,
+    });
+    return;
+  }
 
   if (settings.mode === "stage-image") {
     if (!hasImage) {
@@ -210,6 +229,63 @@ async function captureFromImageBuffers(context) {
   if (Notice) new Notice(`已合并 ${imageBuffers.length} 张截图入库：${fileRel}`);
 }
 
+async function captureAudioToInbox(context) {
+  const {
+    app,
+    fs,
+    path,
+    vaultPath,
+    effectiveSettings,
+    clipboardText,
+    captureTime,
+    stamp,
+    month,
+    Notice,
+    params,
+    mode,
+  } = context;
+
+  const audioAbs = mode === "capture-latest-audio"
+    ? findLatestAudioFile(fs, path, vaultPath)
+    : await resolvePromptedAudioPath(fs, path, vaultPath, clipboardText, params);
+
+  if (!audioAbs) {
+    if (Notice) {
+      new Notice(mode === "capture-latest-audio"
+        ? "没有找到可入库的录音文件。"
+        : "没有获得有效音频路径。请复制音频文件路径后再执行。");
+    }
+    return;
+  }
+
+  const copied = copyAudioFile(fs, path, vaultPath, audioAbs, stamp, month);
+  const transcription = await transcribeAudio(copied.abs, effectiveSettings, fs, path);
+  const summaryResult = await summarizeMeetingTranscript(transcription.text, effectiveSettings);
+  const title = buildMeetingTitle(summaryResult.title, summaryResult.conclusion, copied.originalName, stamp);
+  const fileRel = await uniqueInboxPath(app, `inbox/meetings/${stamp}-${title}.md`);
+  const fileBody = buildMeetingMarkdown({
+    title,
+    captureTime,
+    meetingTime: summaryResult.meetingTime || "待确认",
+    people: summaryResult.people || "待确认",
+    audioLink: `[[${copied.rel}]]`,
+    originalAudioPath: audioAbs,
+    transcriptionStatus: transcription.status,
+    aiStatus: summaryResult.status,
+    conclusion: summaryResult.conclusion,
+    summary: summaryResult.summary,
+    pending: summaryResult.pending,
+    transcript: transcription.text,
+  });
+
+  await app.vault.create(fileRel, fileBody);
+  const file = app.vault.getAbstractFileByPath(fileRel);
+  if (file) {
+    await app.workspace.getLeaf(true).openFile(file);
+  }
+  if (Notice) new Notice(`已录入会议录音：${fileRel}`);
+}
+
 function formatDateTime(date) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
@@ -265,6 +341,276 @@ function removeFiles(fs, files) {
       // Best effort cleanup only.
     }
   }
+}
+
+function findLatestAudioFile(fs, path, vaultPath) {
+  const audioExtPattern = /\.(m4a|mp3|wav|webm|mp4|aac|flac|ogg)$/i;
+  const skippedDirs = new Set([
+    ".git",
+    ".obsidian",
+    "node_modules",
+    "secrets",
+    "templates",
+    "wiki",
+    "raw",
+    "inbox/processed",
+    "inbox/assets/audio",
+    "inbox/assets/chat",
+  ]);
+  let latest = null;
+
+  function shouldSkip(rel) {
+    const normalized = rel.replace(/\\/g, "/");
+    if (!normalized) return false;
+    if (normalized.startsWith(".")) return true;
+    for (const dir of skippedDirs) {
+      if (normalized === dir || normalized.startsWith(`${dir}/`)) return true;
+    }
+    return false;
+  }
+
+  function walk(dirAbs, dirRel) {
+    if (shouldSkip(dirRel)) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dirAbs, { withFileTypes: true });
+    } catch (_error) {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = dirRel ? `${dirRel}/${entry.name}` : entry.name;
+      const abs = path.join(dirAbs, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs, rel);
+        continue;
+      }
+      if (!entry.isFile() || !audioExtPattern.test(entry.name)) continue;
+      const stat = fs.statSync(abs);
+      if (!latest || stat.mtimeMs > latest.mtimeMs) {
+        latest = { abs, mtimeMs: stat.mtimeMs };
+      }
+    }
+  }
+
+  walk(vaultPath, "");
+  return latest ? latest.abs : "";
+}
+
+async function resolvePromptedAudioPath(fs, path, vaultPath, clipboardText, params) {
+  const fromClipboard = normalizeInputPath(clipboardText);
+  if (fromClipboard) {
+    const resolved = resolveAudioPath(path, vaultPath, fromClipboard);
+    if (isReadableAudioFile(fs, resolved)) return resolved;
+  }
+
+  const quickAddApi = params && params.quickAddApi;
+  if (quickAddApi && typeof quickAddApi.inputPrompt === "function") {
+    const value = await quickAddApi.inputPrompt("输入或粘贴音频文件路径");
+    const normalized = normalizeInputPath(value);
+    if (normalized) {
+      const resolved = resolveAudioPath(path, vaultPath, normalized);
+      if (isReadableAudioFile(fs, resolved)) return resolved;
+    }
+  }
+  return "";
+}
+
+function normalizeInputPath(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^file:\/\//, "")
+    .replace(/^["']|["']$/g, "")
+    .replace(/\\ /g, " ");
+}
+
+function resolveAudioPath(path, vaultPath, value) {
+  const decoded = decodeURIComponent(value);
+  return path.isAbsolute(decoded) ? decoded : path.join(vaultPath, decoded);
+}
+
+function isReadableAudioFile(fs, absPath) {
+  if (!absPath || !/\.(m4a|mp3|wav|webm|mp4|aac|flac|ogg)$/i.test(absPath)) return false;
+  try {
+    return fs.statSync(absPath).isFile();
+  } catch (_error) {
+    return false;
+  }
+}
+
+function copyAudioFile(fs, path, vaultPath, audioAbs, stamp, month) {
+  const audioDirRel = `inbox/assets/audio/${month}`;
+  const audioDirAbs = path.join(vaultPath, audioDirRel);
+  fs.mkdirSync(audioDirAbs, { recursive: true });
+  const ext = path.extname(audioAbs).toLowerCase() || ".m4a";
+  const originalName = path.basename(audioAbs);
+  const rel = `${audioDirRel}/${stamp}-meeting-audio${ext}`;
+  const abs = path.join(vaultPath, rel);
+  fs.copyFileSync(audioAbs, abs);
+  return { rel, abs, originalName };
+}
+
+async function transcribeAudio(audioAbs, settings, fs, path) {
+  try {
+    const env = typeof process !== "undefined" && process.env ? process.env : {};
+    const apiKeyEnv = settings.audioApiKeyEnv || settings.openaiApiKeyEnv || "OPENAI_API_KEY";
+    const baseUrlEnv = settings.audioBaseUrlEnv || settings.openaiBaseUrlEnv || "OPENAI_BASE_URL";
+    const apiKey = settings.audioApiKey || settings.apiKey || env[apiKeyEnv] || "";
+    if (!apiKey) return { status: "missing-audio-api-key", text: "" };
+
+    const model = settings.audioModel || "whisper-1";
+    const baseUrl = normalizeBaseUrl(settings.audioBaseUrl || settings.baseUrl || env[baseUrlEnv] || "https://api.openai.com/v1");
+    const fields = [
+      { name: "model", value: model },
+      { name: "response_format", value: settings.audioResponseFormat || "json" },
+    ];
+    if (settings.audioLanguage) {
+      fields.push({ name: "language", value: settings.audioLanguage });
+    }
+    if (settings.audioPrompt) {
+      fields.push({ name: "prompt", value: settings.audioPrompt });
+    }
+
+    const response = await postMultipart(settings.nodeRequire, `${baseUrl}/audio/transcriptions`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      fields,
+      file: {
+        fieldName: "file",
+        filename: path.basename(audioAbs),
+        contentType: contentTypeForAudio(audioAbs),
+        buffer: fs.readFileSync(audioAbs),
+      },
+      timeoutMs: Number(settings.audioTimeoutMs || 10 * 60 * 1000),
+    });
+    if (response.status < 200 || response.status >= 300) {
+      return { status: `audio-http-${response.status}: ${truncate(response.text, 160)}`, text: "" };
+    }
+    const text = (response.json && (response.json.text || response.json.transcript)) || response.text || "";
+    return text.trim()
+      ? { status: `ok (${model})`, text: text.trim() }
+      : { status: "audio-empty-response", text: "" };
+  } catch (error) {
+    return { status: `audio-request-failed: ${error.message || String(error)}`, text: "" };
+  }
+}
+
+function contentTypeForAudio(filePath) {
+  const ext = String(filePath || "").toLowerCase().split(".").pop();
+  const types = {
+    m4a: "audio/mp4",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    webm: "audio/webm",
+    mp4: "video/mp4",
+    aac: "audio/aac",
+    flac: "audio/flac",
+    ogg: "audio/ogg",
+  };
+  return types[ext] || "application/octet-stream";
+}
+
+async function summarizeMeetingTranscript(transcript, settings) {
+  if (!transcript) {
+    return {
+      status: "skipped-no-transcript",
+      title: "会议录音待转写",
+      meetingTime: "待确认",
+      people: "待确认",
+      conclusion: "- 已保存会议录音，但暂未获得可总结的转写文本。",
+      summary: "- 整理 inbox 时可根据录音或后续转写补充会议内容。",
+      pending: "- 待确认：录音转写是否成功、会议时间和参与人。",
+    };
+  }
+
+  const aiResult = await summarizeMeetingWithOpenAI(transcript, settings);
+  if (aiResult.conclusion || aiResult.summary) return aiResult;
+
+  const fallback = heuristicSummary(transcript);
+  return {
+    status: `fallback-local-rule (${aiResult.status})`,
+    title: buildTitle(fallback, transcript, ""),
+    meetingTime: "待确认",
+    people: extractPeople(transcript),
+    conclusion: fallback,
+    summary: "- 该摘要为本地规则生成，整理 inbox 时建议结合原始转写复核。",
+    pending: "- 待确认：会议时间、参与人和关键结论是否准确。",
+  };
+}
+
+async function summarizeMeetingWithOpenAI(transcript, settings) {
+  try {
+    const apiKeyEnv = settings.openaiApiKeyEnv || "OPENAI_API_KEY";
+    const baseUrlEnv = settings.openaiBaseUrlEnv || "OPENAI_BASE_URL";
+    const env = typeof process !== "undefined" && process.env ? process.env : {};
+    const apiKey = settings.apiKey || env[apiKeyEnv] || "";
+    if (!apiKey) return { status: "missing-api-key" };
+    const model = settings.model || "gpt-4o-mini";
+    const baseUrl = normalizeBaseUrl(settings.baseUrl || env[baseUrlEnv] || "https://api.openai.com/v1");
+    const body = {
+      model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是个人知识库会议录音入库助手。",
+            "请基于转写文本生成简洁、可整理的中文会议记录，不猜领域，不写入正式 wiki。",
+            "不要自动生成“决策、行动项、负责人、截止时间”表格；只保留简短结论、会议摘要和待确认点。",
+            "如果参与人、会议时间无法从文本确认，就填“待确认”。",
+            "只返回 JSON，不要 Markdown。",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            "请总结以下会议转写，返回 JSON：",
+            "{",
+            '  "title": "适合文件名的短标题，15字以内",',
+            '  "meetingTime": "会议发生时间，识别不到填待确认",',
+            '  "people": "参与人，逗号分隔，识别不到填待确认",',
+            '  "conclusion": "1-3 条简短结论，Markdown 无序列表",',
+            '  "summary": "3-6 条会议摘要，Markdown 无序列表",',
+            '  "pending": "需要人工确认的信息，Markdown 无序列表；没有则写 - 暂无"',
+            "}",
+            "",
+            transcript.slice(0, 24000),
+          ].join("\n"),
+        },
+      ],
+    };
+    const response = await postJson(settings.nodeRequire, `${baseUrl}/chat/completions`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body,
+    });
+    if (response.status < 200 || response.status >= 300) {
+      return { status: `http-${response.status}: ${truncate(response.text, 160)}` };
+    }
+    const content = (response.json.choices && response.json.choices[0] && response.json.choices[0].message && response.json.choices[0].message.content || "").trim();
+    const parsed = parseJsonObject(content);
+    if (!parsed) return { status: "empty-or-invalid-json" };
+    return {
+      status: `ok (${model})`,
+      title: normalizeUnknown(parsed.title) || "会议录音",
+      meetingTime: normalizeUnknown(parsed.meetingTime) || "待确认",
+      people: normalizeUnknown(parsed.people) || "待确认",
+      conclusion: normalizeListText(parsed.conclusion) || "- 待人工确认会议结论。",
+      summary: normalizeListText(parsed.summary) || "- 待人工补充会议摘要。",
+      pending: normalizeListText(parsed.pending) || "- 暂无",
+    };
+  } catch (error) {
+    return { status: `request-failed: ${error.message || String(error)}` };
+  }
+}
+
+function normalizeListText(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^[-*]\s+/m.test(text)) return text;
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => `- ${line.replace(/^[-*]\s+/, "")}`)
+    .join("\n");
 }
 
 function runOcrIfAvailable(childProcess, imagePath) {
@@ -569,6 +915,72 @@ function postJson(nodeRequire, url, options) {
   });
 }
 
+function postMultipart(nodeRequire, url, options) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (!nodeRequire) {
+        reject(new Error("Node require is unavailable"));
+        return;
+      }
+      const parsed = new URL(url);
+      const transport = nodeRequire(parsed.protocol === "http:" ? "http" : "https");
+      const boundary = `----quickadd-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
+      const chunks = [];
+
+      for (const field of options.fields || []) {
+        chunks.push(Buffer.from(`--${boundary}\r\n`));
+        chunks.push(Buffer.from(`Content-Disposition: form-data; name="${field.name}"\r\n\r\n`));
+        chunks.push(Buffer.from(`${field.value}\r\n`));
+      }
+
+      const file = options.file;
+      chunks.push(Buffer.from(`--${boundary}\r\n`));
+      chunks.push(Buffer.from(`Content-Disposition: form-data; name="${file.fieldName}"; filename="${file.filename}"\r\n`));
+      chunks.push(Buffer.from(`Content-Type: ${file.contentType}\r\n\r\n`));
+      chunks.push(Buffer.isBuffer(file.buffer) ? file.buffer : Buffer.from(file.buffer));
+      chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+      const body = Buffer.concat(chunks);
+
+      const request = transport.request(
+        {
+          protocol: parsed.protocol,
+          hostname: parsed.hostname,
+          port: parsed.port || undefined,
+          path: `${parsed.pathname}${parsed.search}`,
+          method: "POST",
+          headers: {
+            "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            "Content-Length": body.length,
+            ...(options.headers || {}),
+          },
+        },
+        (response) => {
+          const responseChunks = [];
+          response.on("data", (chunk) => responseChunks.push(chunk));
+          response.on("end", () => {
+            const text = Buffer.concat(responseChunks).toString("utf8");
+            let json = {};
+            try {
+              json = text ? JSON.parse(text) : {};
+            } catch (_error) {
+              json = {};
+            }
+            resolve({ status: response.statusCode || 0, text, json });
+          });
+        },
+      );
+      request.on("error", reject);
+      request.setTimeout(options.timeoutMs || 30000, () => {
+        request.destroy(new Error("request timeout"));
+      });
+      request.write(body);
+      request.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 function heuristicSummary(text) {
   const lines = cleanChatText(text)
     .split(/\r?\n/)
@@ -621,6 +1033,11 @@ function buildTitle(summary, rawText, stamp) {
     .map((line) => line.replace(/^[-\d. ]+/, "").trim())
     .find(Boolean) || "聊天记录";
   return sanitizeFileName(truncate(first, 22)) || `聊天记录-${stamp}`;
+}
+
+function buildMeetingTitle(aiTitle, conclusion, originalName, stamp) {
+  const source = aiTitle || conclusion || originalName || "会议录音";
+  return sanitizeFileName(truncate(source.replace(/^[-*]\s*/, ""), 22)) || `会议录音-${stamp}`;
 }
 
 function stripSpeakerPrefix(line) {
@@ -683,5 +1100,45 @@ ${rawBlock}${screenshotSection}## 整理提示
 
 - 录入时不判断领域；整理 inbox 时再决定归属领域并归档到 raw。
 - 如果 Conversation Time、People 或 OCR 内容不准确，整理时以原始截图/原始记录为准。
+`;
+}
+
+function buildMeetingMarkdown(data) {
+  const transcriptBlock = data.transcript
+    ? `\n\`\`\`text\n${data.transcript.replace(/```/g, "'''")}\n\`\`\`\n`
+    : "\n暂未获得可用转写文本。请检查音频转写配置，或整理 inbox 时人工补充。\n";
+
+  return `# ${data.title}
+
+- Capture Time: ${data.captureTime}
+- Meeting Time: ${data.meetingTime}
+- Type: meeting-audio-summary
+- Source: audio
+- Domain: unknown
+- Status: inbox
+- People: ${data.people}
+- Audio: ${data.audioLink}
+- Original Audio Path: ${data.originalAudioPath}
+- Transcription Status: ${data.transcriptionStatus}
+- AI Status: ${data.aiStatus}
+
+## 简短结论
+
+${data.conclusion}
+
+## 会议摘要
+
+${data.summary}
+
+## 待确认
+
+${data.pending}
+
+## 原始转写
+${transcriptBlock}
+## 整理提示
+
+- 录入时不判断领域；整理 inbox 时再决定归属领域并归档到 raw。
+- 如果 Meeting Time、People 或转写内容不准确，整理时以原始录音和上下文为准。
 `;
 }

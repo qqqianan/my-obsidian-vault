@@ -45,6 +45,36 @@
 - AI 总结/截图识别：推荐复制 `secrets/chat-capture.local.example.json` 为 `secrets/chat-capture.local.json`，在本地文件里配置 `baseUrl`、`apiKey`、`model`。如截图识别需要单独模型，可配置 `visionModel`。`secrets/*.local.json` 已被 git 忽略。
 - 环境变量兜底：也可以用 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。不要把 API Key 写入仓库文件。
 
+## 会议录音入库 Macro
+
+推荐入口：`Inbox - 最近录音入库`
+
+使用方式：
+
+1. 用 Obsidian 录音插件或系统录音工具保存会议音频。
+2. 在 Obsidian 命令面板执行 QuickAdd 命令 `Inbox - 最近录音入库`。
+3. 脚本会查找库内最新的 `.m4a`、`.mp3`、`.wav`、`.webm`、`.mp4`、`.aac`、`.flac`、`.ogg` 文件。
+4. 录音会复制到 `inbox/assets/audio/YYYY-MM/`，转写后写入 `inbox/meetings/`。
+5. 生成的会议记录包含 `Capture Time`、`Meeting Time`、`People`、`简短结论`、`会议摘要`、`待确认` 和原始转写。
+
+如果录音文件不在库内，先复制音频文件路径，再执行 `Inbox - 指定音频入库`。该命令会优先读取剪贴板中的路径；如果剪贴板不是有效路径，会弹出输入框。
+
+音频转写配置：
+
+```json
+{
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKey": "sk-REPLACE_WITH_LOCAL_KEY",
+  "model": "gpt-4o-mini",
+  "audioBaseUrl": "https://api.openai.com/v1",
+  "audioApiKey": "sk-REPLACE_WITH_LOCAL_AUDIO_KEY",
+  "audioModel": "whisper-1",
+  "audioLanguage": "zh"
+}
+```
+
+如果 `audioBaseUrl` 或 `audioApiKey` 不配置，脚本会复用 `baseUrl` 和 `apiKey`。`audioModel` 默认是 `whisper-1`，用于兼容 Whisper-compatible API。
+
 ## 原则
 
 QuickAdd 只负责低摩擦捕获，不直接写入 `wiki/`。整理时由 Codex 判断领域、归档 raw、沉淀 wiki、更新索引和交叉链接。

@@ -8,6 +8,7 @@
 - `meetings/`：会议纪要
 - `conclusions/`：结论候选
 - `assets/chat/`：聊天截图等 inbox 临时附件
+- `assets/audio/`：会议录音等 inbox 临时附件
 - `processed/`：已处理的 inbox 原文
 
 ## 使用方式
@@ -34,4 +35,22 @@
 Inbox - 聊天记录入库
 ```
 
-该命令会优先读取剪贴板文本；如果剪贴板是图片，则保存截图并在本机安装 `tesseract` 时执行 OCR。录入时不判断领域，统一写入 `inbox/quick/`，整理时再归档到对应 `raw/<domain>/`。
+该命令会优先读取剪贴板文本；如果剪贴板是图片，则保存截图并优先用 AI 视觉识别，失败时再回退 OCR。录入时不判断领域，统一写入 `inbox/quick/`，整理时再归档到对应 `raw/<domain>/`。
+
+## 会议录音快速录入
+
+录音先由 Obsidian 录音插件或系统录音工具保存到本地，然后触发 QuickAdd 命令：
+
+```text
+Inbox - 最近录音入库
+```
+
+该命令会在库内查找最新的音频文件，复制到 `inbox/assets/audio/YYYY-MM/`，调用 Whisper-compatible API 转写，再生成 `inbox/meetings/` 下的会议记录。
+
+如果录音不在库内，先复制音频文件路径，再触发：
+
+```text
+Inbox - 指定音频入库
+```
+
+音频转写配置放在 `secrets/chat-capture.local.json`，字段包括 `audioBaseUrl`、`audioApiKey`、`audioModel`。如果不配置音频专用字段，会复用 `baseUrl` 和 `apiKey`。

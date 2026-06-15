@@ -10,6 +10,7 @@
 - inbox/meetings/: 会议纪要
 - inbox/conclusions/: 结论候选
 - inbox/assets/chat/: 聊天截图等 inbox 临时附件
+- inbox/assets/audio/: 会议录音等 inbox 临时附件
 - inbox/processed/: 已处理的 inbox 原文
 - raw/: 原始资料，按知识领域分目录，例如 `raw/llm-agent/`、`raw/telematics/`、`raw/computer-science/`
 - wiki/: 整理后的知识页，按知识领域分目录
@@ -57,6 +58,7 @@
 - 会议纪要：`inbox/meetings/{{DATE:YYYY-MM-DD}}-{{VALUE:title}}.md`
 - 结论候选：`inbox/conclusions/{{DATE:YYYY-MM-DD-HHmm}}-{{VALUE:title}}.md`
 - 聊天记录入库：QuickAdd Macro `Inbox - 聊天记录入库`，读取剪贴板文本或截图，写入 `inbox/quick/`
+- 录音快速入库：QuickAdd Macro `Inbox - 最近录音入库` 或 `Inbox - 指定音频入库`，转写并写入 `inbox/meetings/`
 
 ### 聊天记录捕获规则
 
@@ -65,6 +67,15 @@
 - 捕获页可以尝试提取 `People`，但识别不到时写 `待确认`，整理时再人工或由 agent 修正。
 - 捕获页不猜领域，统一保持 `Domain: unknown`，整理 inbox 时再判断归属领域。
 - 截图原件先保存到 `inbox/assets/chat/`；整理入库时，再随原始记录一起归档到对应 `raw/<domain>/`。
+
+### 录音捕获规则
+
+- 会议录音可以先由 Obsidian 录音插件或系统录音工具保存到本地，再用 QuickAdd 录入。
+- 捕获页必须保留 `Capture Time`；如果能从转写中识别会议时间，再填写 `Meeting Time`，否则写 `待确认`。
+- 捕获页可以尝试提取 `People`，但识别不到时写 `待确认`，整理时再人工或由 agent 修正。
+- 捕获页不猜领域，统一保持 `Domain: unknown`，整理 inbox 时再判断归属领域。
+- 录音附件先保存到 `inbox/assets/audio/`；整理入库时，再随原始记录一起归档到对应 `raw/<domain>/`。
+- 音频转写配置放在本机 `secrets/chat-capture.local.json`，不要把 API Key 写入仓库文件。
 
 ### Inbox 整理规则
 
