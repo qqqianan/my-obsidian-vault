@@ -7,7 +7,7 @@
  *
  * Optional:
  * - Install tesseract for OCR: brew install tesseract tesseract-lang
- * - Set OPENAI_API_KEY in the environment that launches Obsidian for AI summary.
+ * - Configure AI in secrets/chat-capture.local.json, or set OPENAI_API_KEY / OPENAI_BASE_URL.
  */
 
 module.exports = async function captureChatToInbox(params, settings = {}) {
@@ -25,6 +25,10 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
 
   const clipboard = electron.clipboard;
   const vaultPath = app.vault.adapter.basePath;
+  const effectiveSettings = {
+    ...settings,
+    ...loadLocalConfig(fs, path, vaultPath, settings.configPath),
+  };
   const now = new Date();
   const captureTime = formatDateTime(now);
   const stamp = formatStamp(now);
@@ -62,7 +66,7 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
   const source = detectSource(rawText);
   const people = extractPeople(rawText);
   const conversationTime = extractConversationTime(rawText) || "待确认";
-  const summary = await summarizeChat(rawText, settings);
+  const summary = await summarizeChat(rawText, effectiveSettings);
   const title = buildTitle(summary, rawText, stamp);
   const fileRel = await uniqueInboxPath(app, `inbox/quick/${stamp}-${title}.md`);
   const fileBody = buildMarkdown({
@@ -113,6 +117,18 @@ function runOcrIfAvailable(childProcess, imagePath) {
     return { status: "ok", text };
   } catch (error) {
     return { status: `failed: ${error.message || String(error)}`, text: "" };
+  }
+}
+
+function loadLocalConfig(fs, path, vaultPath, configPath) {
+  const configRel = configPath || "secrets/chat-capture.local.json";
+  const configAbs = path.isAbsolute(configRel) ? configRel : path.join(vaultPath, configRel);
+  if (!fs.existsSync(configAbs)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(configAbs, "utf8"));
+  } catch (error) {
+    console.warn(`Failed to read chat capture config ${configAbs}:`, error);
+    return {};
   }
 }
 
@@ -180,9 +196,12 @@ async function summarizeChat(text, settings) {
 async function summarizeWithOpenAI(text, settings) {
   try {
     const apiKeyEnv = settings.openaiApiKeyEnv || "OPENAI_API_KEY";
-    const apiKey = typeof process !== "undefined" && process.env ? process.env[apiKeyEnv] : "";
+    const baseUrlEnv = settings.openaiBaseUrlEnv || "OPENAI_BASE_URL";
+    const env = typeof process !== "undefined" && process.env ? process.env : {};
+    const apiKey = settings.apiKey || env[apiKeyEnv] || "";
     if (!apiKey) return "";
     const model = settings.model || "gpt-4o-mini";
+    const baseUrl = normalizeBaseUrl(settings.baseUrl || env[baseUrlEnv] || "https://api.openai.com/v1");
     const body = {
       model,
       temperature: 0.2,
@@ -197,7 +216,7 @@ async function summarizeWithOpenAI(text, settings) {
         },
       ],
     };
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -211,6 +230,10 @@ async function summarizeWithOpenAI(text, settings) {
   } catch (_error) {
     return "";
   }
+}
+
+function normalizeBaseUrl(baseUrl) {
+  return String(baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
 }
 
 function heuristicSummary(text) {

@@ -13,3 +13,6 @@
 # Local backups generated during setup/customization.
 .obsidian/plugins/*/*.backup.json
 .obsidian/plugins/*/*backup*.json
+
+# Local secrets. Keep examples tracked, keep real credentials out of git.
+secrets/*.local.json

@@ -33,7 +33,8 @@
 可选增强：
 
 - OCR：`brew install tesseract tesseract-lang`
-- AI 总结：用环境变量 `OPENAI_API_KEY` 提供 OpenAI API Key。不要把 API Key 写入仓库文件。
+- AI 总结：推荐复制 `secrets/chat-capture.local.example.json` 为 `secrets/chat-capture.local.json`，在本地文件里配置 `baseUrl`、`apiKey`、`model`。`secrets/*.local.json` 已被 git 忽略。
+- 环境变量兜底：也可以用 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。不要把 API Key 写入仓库文件。
 
 ## 原则
 
