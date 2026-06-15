@@ -5,7 +5,6 @@
 .obsidian/workspace.json
 .obsidian/workspace-mobile.json
 .obsidian/cache/
-.obsidian/plugins/obsidian-git/data.json
 
 # Installed plugin bundles are reproducible from community plugin IDs.
 .obsidian/plugins/*/main.js
