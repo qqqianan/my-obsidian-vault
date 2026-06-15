@@ -83,6 +83,21 @@
 - whisper.cpp server：适合全自动入库。先启动本地 server，再执行 `Inbox - 最近录音入库` 或 `Inbox - 指定音频入库`。
 - MacWhisper：适合手动转写。先在 MacWhisper 中打开录音并导出 `.txt`，再把转写文本作为会议纪要或日常沟通录入 inbox；后续可以再加一个“转写文本入库”命令做半自动总结。
 
+当前本机已用 LaunchAgent 启动 whisper.cpp server：
+
+- LaunchAgent: `~/Library/LaunchAgents/com.qianan.whisper-server.plist`
+- 模型文件：`~/.local/share/whisper.cpp/models/ggml-base.bin`
+- 日志：`~/.local/var/log/whisper-server.log`
+- 服务地址：`http://127.0.0.1:9000/v1/audio/transcriptions`
+
+常用命令：
+
+```bash
+launchctl print gui/$(id -u)/com.qianan.whisper-server
+launchctl kickstart -k gui/$(id -u)/com.qianan.whisper-server
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.qianan.whisper-server.plist
+```
+
 ## 原则
 
 QuickAdd 只负责低摩擦捕获，不直接写入 `wiki/`。整理时由 Codex 判断领域、归档 raw、沉淀 wiki、更新索引和交叉链接。
