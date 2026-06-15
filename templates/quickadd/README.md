@@ -30,6 +30,15 @@
 3. 脚本会把内容写入 `inbox/quick/`，并生成 `Capture Time`、`Conversation Time`、`People`、`简短结论` 和原始记录。
 4. 如果剪贴板是截图，图片会保存到 `inbox/assets/chat/YYYY-MM/`；脚本会优先用 AI 视觉模型识别聊天内容，失败时才回退到 OCR。
 
+### 多张截图
+
+剪贴板一次只能保存一张图片。多张聊天截图使用两个命令：
+
+1. 每截一张图后执行 `Inbox - 聊天截图暂存`，脚本会把当前剪贴板图片保存到 `inbox/assets/chat/staging/`。
+2. 所有截图暂存完成后，执行 `Inbox - 暂存截图合并入库`。
+3. 合并入库会按暂存文件名顺序把多张截图一起交给 AI 视觉模型识别，并要求模型去掉重叠内容和引用重复。
+4. 合并成功后，暂存截图会移动/保存到当月附件目录，暂存区会清空。
+
 可选增强：
 
 - OCR 兜底：`brew install tesseract tesseract-lang`

@@ -163,6 +163,50 @@
         ]
       },
       "runOnStartup": false
+    },
+    {
+      "id": "inbox-chat-stage-image",
+      "name": "Inbox - 聊天截图暂存",
+      "type": "Macro",
+      "command": true,
+      "macro": {
+        "id": "inbox-chat-stage-image-macro",
+        "name": "Inbox - 聊天截图暂存",
+        "commands": [
+          {
+            "id": "inbox-chat-stage-image-script",
+            "name": "暂存当前剪贴板截图",
+            "type": "UserScript",
+            "path": "templates/quickadd/scripts/capture-chat-to-inbox.js",
+            "settings": {
+              "mode": "stage-image"
+            }
+          }
+        ]
+      },
+      "runOnStartup": false
+    },
+    {
+      "id": "inbox-chat-capture-staged",
+      "name": "Inbox - 暂存截图合并入库",
+      "type": "Macro",
+      "command": true,
+      "macro": {
+        "id": "inbox-chat-capture-staged-macro",
+        "name": "Inbox - 暂存截图合并入库",
+        "commands": [
+          {
+            "id": "inbox-chat-capture-staged-script",
+            "name": "合并暂存聊天截图",
+            "type": "UserScript",
+            "path": "templates/quickadd/scripts/capture-chat-to-inbox.js",
+            "settings": {
+              "mode": "capture-staged"
+            }
+          }
+        ]
+      },
+      "runOnStartup": false
     }
   ],
   "inputPrompt": "single-line",

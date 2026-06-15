@@ -39,6 +39,39 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
   const image = clipboard.readImage();
   const hasImage = image && !image.isEmpty();
 
+  if (settings.mode === "stage-image") {
+    if (!hasImage) {
+      if (Notice) new Notice("剪贴板里没有图片，未暂存。");
+      return;
+    }
+    const stagedRel = stageClipboardImage(fs, path, vaultPath, image.toPNG(), stamp);
+    if (Notice) new Notice(`已暂存聊天截图：${stagedRel}`);
+    return;
+  }
+
+  if (settings.mode === "capture-staged") {
+    const stagedImages = readStagedImages(fs, path, vaultPath);
+    if (!stagedImages.length) {
+      if (Notice) new Notice("没有暂存截图。请先执行“聊天截图暂存”。");
+      return;
+    }
+    await captureFromImageBuffers({
+      app,
+      fs,
+      path,
+      vaultPath,
+      effectiveSettings,
+      imageBuffers: stagedImages.map((item) => item.buffer),
+      stagedFiles: stagedImages.map((item) => item.abs),
+      captureTime,
+      stamp,
+      month,
+      childProcess,
+      Notice,
+    });
+    return;
+  }
+
   let screenshotLink = "";
   let screenshotPath = "";
   let extractedText = "";
@@ -49,16 +82,12 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
   let extractedSummary = "";
 
   if (hasImage) {
-    const imageDirRel = `inbox/assets/chat/${month}`;
-    const imageDirAbs = path.join(vaultPath, imageDirRel);
-    fs.mkdirSync(imageDirAbs, { recursive: true });
-    const imageName = `${stamp}-chat.png`;
-    screenshotPath = path.join(imageDirAbs, imageName);
-    fs.writeFileSync(screenshotPath, image.toPNG());
-    screenshotLink = `![[${imageDirRel}/${imageName}]]`;
+    const saved = saveImageBuffers(fs, path, vaultPath, [image.toPNG()], stamp, month);
+    screenshotPath = saved[0].abs;
+    screenshotLink = saved.map((item) => `![[${item.rel}]]`).join("\n");
 
     if (!textFromClipboard) {
-      const vision = await extractChatFromImage(image.toPNG(), effectiveSettings);
+      const vision = await extractChatFromImages([image.toPNG()], effectiveSettings);
       if (vision.text) {
         extractedText = vision.text;
         extractedSource = vision.source;
@@ -111,6 +140,76 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
   if (Notice) new Notice(`已录入聊天记录：${fileRel}`);
 };
 
+async function captureFromImageBuffers(context) {
+  const {
+    app,
+    fs,
+    path,
+    vaultPath,
+    effectiveSettings,
+    imageBuffers,
+    stagedFiles,
+    captureTime,
+    stamp,
+    month,
+    childProcess,
+    Notice,
+  } = context;
+
+  const saved = saveImageBuffers(fs, path, vaultPath, imageBuffers, stamp, month);
+  const screenshotLink = saved.map((item) => `![[${item.rel}]]`).join("\n");
+  const vision = await extractChatFromImages(imageBuffers, effectiveSettings);
+  let extractedText = "";
+  let extractionStatus = vision.status;
+  let extractedSource = "";
+  let extractedPeople = "";
+  let extractedConversationTime = "";
+  let extractedSummary = "";
+
+  if (vision.text) {
+    extractedText = vision.text;
+    extractedSource = vision.source;
+    extractedPeople = vision.people;
+    extractedConversationTime = vision.conversationTime;
+    extractedSummary = vision.summary;
+  } else {
+    const ocrTexts = saved.map((item) => runOcrIfAvailable(childProcess, item.abs).text).join("\n");
+    extractedText = cleanChatText(ocrTexts.trim());
+    extractionStatus = `ocr-fallback (${vision.status})`;
+  }
+
+  const rawText = extractedText;
+  const source = extractedSource || detectSource(rawText);
+  const people = extractedPeople || extractPeople(rawText);
+  const conversationTime = extractedConversationTime || extractConversationTime(rawText) || "待确认";
+  const summaryResult = extractedSummary
+    ? { status: extractionStatus, summary: extractedSummary }
+    : await summarizeChat(rawText, effectiveSettings);
+  const summary = summaryResult.summary;
+  const title = buildTitle(summary, rawText, stamp);
+  const fileRel = await uniqueInboxPath(app, `inbox/quick/${stamp}-${title}.md`);
+  const fileBody = buildMarkdown({
+    title,
+    captureTime,
+    conversationTime,
+    source,
+    people,
+    summary,
+    rawText,
+    screenshotLink,
+    extractionStatus,
+    aiStatus: summaryResult.status,
+  });
+
+  await app.vault.create(fileRel, fileBody);
+  removeFiles(fs, stagedFiles);
+  const file = app.vault.getAbstractFileByPath(fileRel);
+  if (file) {
+    await app.workspace.getLeaf(true).openFile(file);
+  }
+  if (Notice) new Notice(`已合并 ${imageBuffers.length} 张截图入库：${fileRel}`);
+}
+
 function formatDateTime(date) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
@@ -121,6 +220,51 @@ function formatStamp(date) {
 
 function pad2(value) {
   return String(value).padStart(2, "0");
+}
+
+function stageClipboardImage(fs, path, vaultPath, imageBuffer, stamp) {
+  const stagingRel = "inbox/assets/chat/staging";
+  const stagingAbs = path.join(vaultPath, stagingRel);
+  fs.mkdirSync(stagingAbs, { recursive: true });
+  const imageName = `${stamp}-${Date.now()}-chat.png`;
+  const imageAbs = path.join(stagingAbs, imageName);
+  fs.writeFileSync(imageAbs, imageBuffer);
+  return `${stagingRel}/${imageName}`;
+}
+
+function readStagedImages(fs, path, vaultPath) {
+  const stagingAbs = path.join(vaultPath, "inbox/assets/chat/staging");
+  if (!fs.existsSync(stagingAbs)) return [];
+  return fs.readdirSync(stagingAbs)
+    .filter((name) => /\.(png|jpg|jpeg|webp)$/i.test(name))
+    .sort()
+    .map((name) => {
+      const abs = path.join(stagingAbs, name);
+      return { abs, buffer: fs.readFileSync(abs) };
+    });
+}
+
+function saveImageBuffers(fs, path, vaultPath, imageBuffers, stamp, month) {
+  const imageDirRel = `inbox/assets/chat/${month}`;
+  const imageDirAbs = path.join(vaultPath, imageDirRel);
+  fs.mkdirSync(imageDirAbs, { recursive: true });
+  return imageBuffers.map((buffer, index) => {
+    const suffix = imageBuffers.length === 1 ? "chat" : `chat-${String(index + 1).padStart(2, "0")}`;
+    const rel = `${imageDirRel}/${stamp}-${suffix}.png`;
+    const abs = path.join(vaultPath, rel);
+    fs.writeFileSync(abs, buffer);
+    return { rel, abs };
+  });
+}
+
+function removeFiles(fs, files) {
+  for (const file of files || []) {
+    try {
+      fs.unlinkSync(file);
+    } catch (_error) {
+      // Best effort cleanup only.
+    }
+  }
 }
 
 function runOcrIfAvailable(childProcess, imagePath) {
@@ -141,7 +285,7 @@ function runOcrIfAvailable(childProcess, imagePath) {
   }
 }
 
-async function extractChatFromImage(imageBuffer, settings) {
+async function extractChatFromImages(imageBuffers, settings) {
   try {
     const apiKeyEnv = settings.openaiApiKeyEnv || "OPENAI_API_KEY";
     const baseUrlEnv = settings.openaiBaseUrlEnv || "OPENAI_BASE_URL";
@@ -151,7 +295,10 @@ async function extractChatFromImage(imageBuffer, settings) {
 
     const model = settings.visionModel || settings.model || "gpt-4o-mini";
     const baseUrl = normalizeBaseUrl(settings.baseUrl || env[baseUrlEnv] || "https://api.openai.com/v1");
-    const imageDataUrl = `data:image/png;base64,${Buffer.from(imageBuffer).toString("base64")}`;
+    const imageParts = imageBuffers.map((buffer) => ({
+      type: "image_url",
+      image_url: { url: `data:image/png;base64,${Buffer.from(buffer).toString("base64")}` },
+    }));
     const body = {
       model,
       temperature: 0.1,
@@ -161,9 +308,14 @@ async function extractChatFromImage(imageBuffer, settings) {
           content: [
             "你是聊天截图入库助手。",
             "请直接识别截图中的聊天内容，不要使用 OCR 噪声。",
+            "用户可能提供一张或多张连续聊天截图；多张截图按输入顺序从上到下、从早到晚合并。",
+            "多张截图之间可能有重叠内容，请合并去重，不要重复写入 cleanedText 或 summary。",
             "需要区分真实聊天消息和 UI 元素，例如未读人数、回复按钮、图片占位、头像、应用导航。",
             "如果是钉钉截图，source 填“钉钉”；如果是微信截图，source 填“微信”；无法判断填 unknown。",
-            "如果某条消息引用/回复了别人的旧消息，请只把引用内容作为上下文，不要把同一内容在 cleanedText 或 summary 中重复两次。",
+            "如果某条消息引用/回复了别人的旧消息，引用内容只作为背景上下文；cleanedText 中可以标注为【引用上下文：...】，但 summary 不要把引用内容当作本次新结论。",
+            "summary 必须优先总结截图中新发生的沟通结果：谁提出请求、谁确认/回复、当前结论是什么。",
+            "summary 不要平铺复述引用里的历史细节；只有当后续新消息明确确认、否定或改变了引用内容时，才把它写入结论。",
+            "如果截图中只有转发/引用并要求某人确认，summary 应写成“某人转发/询问某事，接收人已收到/待确认”，而不是把被引用内容扩写成最终结论。",
             "只返回 JSON，不要 Markdown。",
           ].join("\n"),
         },
@@ -174,19 +326,17 @@ async function extractChatFromImage(imageBuffer, settings) {
               type: "text",
               text: [
                 "请从这张聊天截图中提取结构化信息，返回 JSON：",
+                imageBuffers.length > 1 ? `共有 ${imageBuffers.length} 张连续聊天截图，请按顺序合并识别并去重。` : "共有 1 张聊天截图。",
                 "{",
                 '  "source": "微信/钉钉/unknown",',
                 '  "conversationTime": "能识别到的对话时间，识别不到填待确认",',
                 '  "people": "参与人，逗号分隔，识别不到填待确认",',
                 '  "cleanedText": "按时间顺序整理后的聊天原文，去掉未读、回复按钮、头像、导航等 UI 噪声；引用消息只保留一次并标注为引用上下文",',
-                '  "summary": "1-3 条简短结论，不猜领域，不生成待办表"',
+                '  "summary": "1-3 条简短结论，只总结本次截图中新发生的沟通结果；引用上下文只作为背景，不要扩写成结论；不猜领域，不生成待办表"',
                 "}",
               ].join("\n"),
             },
-            {
-              type: "image_url",
-              image_url: { url: imageDataUrl },
-            },
+            ...imageParts,
           ],
         },
       ],
@@ -336,7 +486,11 @@ async function summarizeWithOpenAI(text, settings) {
       messages: [
         {
           role: "system",
-          content: "你是个人知识库助手。请把聊天记录总结成一段简短中文结论，不猜领域，不生成待办表。",
+          content: [
+            "你是个人知识库助手。请把聊天记录总结成一段简短中文结论，不猜领域，不生成待办表。",
+            "如果聊天里包含引用/转发的旧消息，引用内容只作为背景；优先总结引用之后的新沟通结果、确认结果和当前状态。",
+            "不要把引用里的历史细节平铺复述成新的结论，除非后续消息明确确认、否定或改变了它。",
+          ].join("\n"),
         },
         {
           role: "user",
