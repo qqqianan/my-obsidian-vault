@@ -28,6 +28,7 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
   const effectiveSettings = {
     ...settings,
     ...loadLocalConfig(fs, path, vaultPath, settings.configPath),
+    nodeRequire: requireFromWindow,
   };
   const now = new Date();
   const captureTime = formatDateTime(now);
@@ -66,7 +67,8 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
   const source = detectSource(rawText);
   const people = extractPeople(rawText);
   const conversationTime = extractConversationTime(rawText) || "待确认";
-  const summary = await summarizeChat(rawText, effectiveSettings);
+  const summaryResult = await summarizeChat(rawText, effectiveSettings);
+  const summary = summaryResult.summary;
   const title = buildTitle(summary, rawText, stamp);
   const fileRel = await uniqueInboxPath(app, `inbox/quick/${stamp}-${title}.md`);
   const fileBody = buildMarkdown({
@@ -79,6 +81,7 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
     rawText,
     screenshotLink,
     ocrStatus,
+    aiStatus: summaryResult.status,
   });
 
   await app.vault.create(fileRel, fileBody);
@@ -187,10 +190,13 @@ function extractConversationTime(text) {
 }
 
 async function summarizeChat(text, settings) {
-  if (!text) return "截图已保存，但未获得可总结的文本。";
+  if (!text) return { status: "skipped-no-text", summary: "截图已保存，但未获得可总结的文本。" };
   const openAiSummary = await summarizeWithOpenAI(text, settings);
-  if (openAiSummary) return openAiSummary;
-  return heuristicSummary(text);
+  if (openAiSummary.summary) return openAiSummary;
+  return {
+    status: `fallback-local-rule (${openAiSummary.status})`,
+    summary: heuristicSummary(text),
+  };
 }
 
 async function summarizeWithOpenAI(text, settings) {
@@ -199,7 +205,7 @@ async function summarizeWithOpenAI(text, settings) {
     const baseUrlEnv = settings.openaiBaseUrlEnv || "OPENAI_BASE_URL";
     const env = typeof process !== "undefined" && process.env ? process.env : {};
     const apiKey = settings.apiKey || env[apiKeyEnv] || "";
-    if (!apiKey) return "";
+    if (!apiKey) return { status: "missing-api-key", summary: "" };
     const model = settings.model || "gpt-4o-mini";
     const baseUrl = normalizeBaseUrl(settings.baseUrl || env[baseUrlEnv] || "https://api.openai.com/v1");
     const body = {
@@ -216,24 +222,75 @@ async function summarizeWithOpenAI(text, settings) {
         },
       ],
     };
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
+    const response = await postJson(settings.nodeRequire, `${baseUrl}/chat/completions`, {
       headers: {
-        "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(body),
+      body,
     });
-    if (!response.ok) return "";
-    const data = await response.json();
-    return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || "").trim();
-  } catch (_error) {
-    return "";
+    if (response.status < 200 || response.status >= 300) {
+      return { status: `http-${response.status}: ${truncate(response.text, 160)}`, summary: "" };
+    }
+    const data = response.json;
+    const content = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || data.choices && data.choices[0] && data.choices[0].text || "").trim();
+    return content ? { status: `ok (${model})`, summary: content } : { status: "empty-response", summary: "" };
+  } catch (error) {
+    return { status: `request-failed: ${error.message || String(error)}`, summary: "" };
   }
 }
 
 function normalizeBaseUrl(baseUrl) {
   return String(baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+}
+
+function postJson(nodeRequire, url, options) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (!nodeRequire) {
+        reject(new Error("Node require is unavailable"));
+        return;
+      }
+      const parsed = new URL(url);
+      const transport = nodeRequire(parsed.protocol === "http:" ? "http" : "https");
+      const body = JSON.stringify(options.body || {});
+      const request = transport.request(
+        {
+          protocol: parsed.protocol,
+          hostname: parsed.hostname,
+          port: parsed.port || undefined,
+          path: `${parsed.pathname}${parsed.search}`,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+            ...(options.headers || {}),
+          },
+        },
+        (response) => {
+          const chunks = [];
+          response.on("data", (chunk) => chunks.push(chunk));
+          response.on("end", () => {
+            const text = Buffer.concat(chunks).toString("utf8");
+            let json = {};
+            try {
+              json = text ? JSON.parse(text) : {};
+            } catch (_error) {
+              json = {};
+            }
+            resolve({ status: response.statusCode || 0, text, json });
+          });
+        },
+      );
+      request.on("error", reject);
+      request.setTimeout(30000, () => {
+        request.destroy(new Error("request timeout"));
+      });
+      request.write(body);
+      request.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 function heuristicSummary(text) {
@@ -312,6 +369,7 @@ function buildMarkdown(data) {
 - Status: inbox
 - People: ${data.people}
 - OCR Status: ${data.ocrStatus}
+- AI Status: ${data.aiStatus}
 
 ## 简短结论
 
