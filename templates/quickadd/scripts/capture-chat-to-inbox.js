@@ -41,8 +41,12 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
 
   let screenshotLink = "";
   let screenshotPath = "";
-  let ocrText = "";
-  let ocrStatus = "not-needed";
+  let extractedText = "";
+  let extractionStatus = textFromClipboard ? "clipboard-text" : "not-needed";
+  let extractedSource = "";
+  let extractedPeople = "";
+  let extractedConversationTime = "";
+  let extractedSummary = "";
 
   if (hasImage) {
     const imageDirRel = `inbox/assets/chat/${month}`;
@@ -53,21 +57,35 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
     fs.writeFileSync(screenshotPath, image.toPNG());
     screenshotLink = `![[${imageDirRel}/${imageName}]]`;
 
-    const ocr = runOcrIfAvailable(childProcess, screenshotPath);
-    ocrText = ocr.text.trim();
-    ocrStatus = ocr.status;
+    if (!textFromClipboard) {
+      const vision = await extractChatFromImage(image.toPNG(), effectiveSettings);
+      if (vision.text) {
+        extractedText = vision.text;
+        extractedSource = vision.source;
+        extractedPeople = vision.people;
+        extractedConversationTime = vision.conversationTime;
+        extractedSummary = vision.summary;
+        extractionStatus = vision.status;
+      } else {
+        const ocr = runOcrIfAvailable(childProcess, screenshotPath);
+        extractedText = cleanChatText(ocr.text.trim());
+        extractionStatus = `ocr-fallback (${vision.status}; ${ocr.status})`;
+      }
+    }
   }
 
-  const rawText = textFromClipboard || ocrText;
+  const rawText = textFromClipboard || extractedText;
   if (!rawText && !hasImage) {
     if (Notice) new Notice("剪贴板里没有文本或图片，未生成 inbox 记录。");
     return;
   }
 
-  const source = detectSource(rawText);
-  const people = extractPeople(rawText);
-  const conversationTime = extractConversationTime(rawText) || "待确认";
-  const summaryResult = await summarizeChat(rawText, effectiveSettings);
+  const source = extractedSource || detectSource(rawText);
+  const people = extractedPeople || extractPeople(rawText);
+  const conversationTime = extractedConversationTime || extractConversationTime(rawText) || "待确认";
+  const summaryResult = extractedSummary
+    ? { status: extractionStatus, summary: extractedSummary }
+    : await summarizeChat(rawText, effectiveSettings);
   const summary = summaryResult.summary;
   const title = buildTitle(summary, rawText, stamp);
   const fileRel = await uniqueInboxPath(app, `inbox/quick/${stamp}-${title}.md`);
@@ -80,7 +98,7 @@ module.exports = async function captureChatToInbox(params, settings = {}) {
     summary,
     rawText,
     screenshotLink,
-    ocrStatus,
+    extractionStatus,
     aiStatus: summaryResult.status,
   });
 
@@ -123,6 +141,109 @@ function runOcrIfAvailable(childProcess, imagePath) {
   }
 }
 
+async function extractChatFromImage(imageBuffer, settings) {
+  try {
+    const apiKeyEnv = settings.openaiApiKeyEnv || "OPENAI_API_KEY";
+    const baseUrlEnv = settings.openaiBaseUrlEnv || "OPENAI_BASE_URL";
+    const env = typeof process !== "undefined" && process.env ? process.env : {};
+    const apiKey = settings.apiKey || env[apiKeyEnv] || "";
+    if (!apiKey) return emptyVisionResult("missing-api-key");
+
+    const model = settings.visionModel || settings.model || "gpt-4o-mini";
+    const baseUrl = normalizeBaseUrl(settings.baseUrl || env[baseUrlEnv] || "https://api.openai.com/v1");
+    const imageDataUrl = `data:image/png;base64,${Buffer.from(imageBuffer).toString("base64")}`;
+    const body = {
+      model,
+      temperature: 0.1,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是聊天截图入库助手。",
+            "请直接识别截图中的聊天内容，不要使用 OCR 噪声。",
+            "需要区分真实聊天消息和 UI 元素，例如未读人数、回复按钮、图片占位、头像、应用导航。",
+            "如果是钉钉截图，source 填“钉钉”；如果是微信截图，source 填“微信”；无法判断填 unknown。",
+            "如果某条消息引用/回复了别人的旧消息，请只把引用内容作为上下文，不要把同一内容在 cleanedText 或 summary 中重复两次。",
+            "只返回 JSON，不要 Markdown。",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "请从这张聊天截图中提取结构化信息，返回 JSON：",
+                "{",
+                '  "source": "微信/钉钉/unknown",',
+                '  "conversationTime": "能识别到的对话时间，识别不到填待确认",',
+                '  "people": "参与人，逗号分隔，识别不到填待确认",',
+                '  "cleanedText": "按时间顺序整理后的聊天原文，去掉未读、回复按钮、头像、导航等 UI 噪声；引用消息只保留一次并标注为引用上下文",',
+                '  "summary": "1-3 条简短结论，不猜领域，不生成待办表"',
+                "}",
+              ].join("\n"),
+            },
+            {
+              type: "image_url",
+              image_url: { url: imageDataUrl },
+            },
+          ],
+        },
+      ],
+    };
+    const response = await postJson(settings.nodeRequire, `${baseUrl}/chat/completions`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body,
+    });
+    if (response.status < 200 || response.status >= 300) {
+      return emptyVisionResult(`vision-http-${response.status}: ${truncate(response.text, 160)}`);
+    }
+    const content = (response.json.choices && response.json.choices[0] && response.json.choices[0].message && response.json.choices[0].message.content || "").trim();
+    const parsed = parseJsonObject(content);
+    if (!parsed) return emptyVisionResult("vision-empty-or-invalid-json");
+    return {
+      status: `vision-ok (${model})`,
+      source: normalizeUnknown(parsed.source),
+      conversationTime: normalizeUnknown(parsed.conversationTime),
+      people: normalizeUnknown(parsed.people),
+      text: cleanChatText(parsed.cleanedText || ""),
+      summary: normalizeUnknown(parsed.summary),
+    };
+  } catch (error) {
+    return emptyVisionResult(`vision-request-failed: ${error.message || String(error)}`);
+  }
+}
+
+function emptyVisionResult(status) {
+  return {
+    status,
+    source: "",
+    conversationTime: "",
+    people: "",
+    text: "",
+    summary: "",
+  };
+}
+
+function parseJsonObject(content) {
+  try {
+    return JSON.parse(content);
+  } catch (_error) {
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch (__error) {
+      return null;
+    }
+  }
+}
+
+function normalizeUnknown(value) {
+  const normalized = String(value || "").trim();
+  return normalized && normalized !== "unknown" && normalized !== "待确认" ? normalized : "";
+}
+
 function loadLocalConfig(fs, path, vaultPath, configPath) {
   const configRel = configPath || "secrets/chat-capture.local.json";
   const configAbs = path.isAbsolute(configRel) ? configRel : path.join(vaultPath, configRel);
@@ -136,6 +257,7 @@ function loadLocalConfig(fs, path, vaultPath, configPath) {
 }
 
 function detectSource(text) {
+  if (/钉钉|DingTalk|DING|未读|回复/.test(text) && !/微信|WeChat/.test(text)) return "钉钉";
   if (/钉钉|DingTalk/i.test(text)) return "钉钉";
   if (/微信|WeChat/i.test(text)) return "微信";
   return "unknown";
@@ -294,7 +416,7 @@ function postJson(nodeRequire, url, options) {
 }
 
 function heuristicSummary(text) {
-  const lines = text
+  const lines = cleanChatText(text)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .map(stripSpeakerPrefix)
@@ -309,6 +431,33 @@ function heuristicSummary(text) {
   if (second) points.push(`- ${truncate(second, 120)}`);
   points.push("- 该总结为本地规则生成，整理 inbox 时可进一步归纳。");
   return points.join("\n");
+}
+
+function cleanChatText(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^\d+人未读$/.test(line))
+    .filter((line) => !/^(回复|收到|图片|\\[图片\\])$/.test(line))
+    .filter((line) => !/^[A-Za-z0-9]{3,}\s+\d+人未读$/.test(line));
+
+  const seen = new Set();
+  const cleaned = [];
+  for (const line of lines) {
+    const normalized = normalizeLineForDedupe(line);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    cleaned.push(line);
+  }
+  return cleaned.join("\n");
+}
+
+function normalizeLineForDedupe(line) {
+  return stripSpeakerPrefix(line)
+    .replace(/@\S+/g, "")
+    .replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, "")
+    .trim();
 }
 
 function buildTitle(summary, rawText, stamp) {
@@ -368,7 +517,7 @@ function buildMarkdown(data) {
 - Domain: unknown
 - Status: inbox
 - People: ${data.people}
-- OCR Status: ${data.ocrStatus}
+- Extraction Status: ${data.extractionStatus}
 - AI Status: ${data.aiStatus}
 
 ## 简短结论

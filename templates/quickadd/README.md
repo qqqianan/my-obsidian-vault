@@ -28,12 +28,12 @@
 1. 在微信、钉钉或其他聊天工具中复制聊天文本；如果不能复制多条消息，就截图并让截图留在剪贴板。
 2. 在 Obsidian 命令面板执行 QuickAdd 命令 `Inbox - 聊天记录入库`。
 3. 脚本会把内容写入 `inbox/quick/`，并生成 `Capture Time`、`Conversation Time`、`People`、`简短结论` 和原始记录。
-4. 如果剪贴板是截图，图片会保存到 `inbox/assets/chat/YYYY-MM/`；如果本机安装了 `tesseract`，会自动 OCR。
+4. 如果剪贴板是截图，图片会保存到 `inbox/assets/chat/YYYY-MM/`；脚本会优先用 AI 视觉模型识别聊天内容，失败时才回退到 OCR。
 
 可选增强：
 
-- OCR：`brew install tesseract tesseract-lang`
-- AI 总结：推荐复制 `secrets/chat-capture.local.example.json` 为 `secrets/chat-capture.local.json`，在本地文件里配置 `baseUrl`、`apiKey`、`model`。`secrets/*.local.json` 已被 git 忽略。
+- OCR 兜底：`brew install tesseract tesseract-lang`
+- AI 总结/截图识别：推荐复制 `secrets/chat-capture.local.example.json` 为 `secrets/chat-capture.local.json`，在本地文件里配置 `baseUrl`、`apiKey`、`model`。如截图识别需要单独模型，可配置 `visionModel`。`secrets/*.local.json` 已被 git 忽略。
 - 环境变量兜底：也可以用 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。不要把 API Key 写入仓库文件。
 
 ## 原则
