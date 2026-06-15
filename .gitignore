@@ -1,0 +1,15 @@
+.DS_Store
+**/.DS_Store
+
+# Obsidian local/session state
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache/
+
+# Installed plugin bundles are reproducible from community plugin IDs.
+.obsidian/plugins/*/main.js
+.obsidian/plugins/*/styles.css
+
+# Local backups generated during setup/customization.
+.obsidian/plugins/*/*.backup.json
+.obsidian/plugins/*/*backup*.json
