@@ -86,7 +86,7 @@
 当前本机已用 LaunchAgent 启动 whisper.cpp server：
 
 - LaunchAgent: `~/Library/LaunchAgents/com.qianan.whisper-server.plist`
-- 模型文件：`~/.local/share/whisper.cpp/models/ggml-base.bin`
+- 模型文件：`~/.local/share/whisper.cpp/models/ggml-small.bin`
 - 日志：`~/.local/var/log/whisper-server.log`
 - 服务地址：`http://127.0.0.1:9000/v1/audio/transcriptions`
 
