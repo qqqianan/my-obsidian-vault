@@ -186,11 +186,11 @@
       },
       "runOnStartup": false
     },
-        {
-            "id": "inbox-chat-capture-staged",
-            "name": "Inbox - 暂存截图合并入库",
-            "type": "Macro",
-            "command": true,
+    {
+      "id": "inbox-chat-capture-staged",
+      "name": "Inbox - 暂存截图合并入库",
+      "type": "Macro",
+      "command": true,
       "macro": {
         "id": "inbox-chat-capture-staged-macro",
         "name": "Inbox - 暂存截图合并入库",
@@ -205,54 +205,54 @@
             }
           }
         ]
-            },
-            "runOnStartup": false
-        },
-        {
-            "id": "inbox-audio-capture-latest",
-            "name": "Inbox - 最近录音入库",
-            "type": "Macro",
-            "command": true,
-            "macro": {
-                "id": "inbox-audio-capture-latest-macro",
-                "name": "Inbox - 最近录音入库",
-                "commands": [
-                    {
-                        "id": "inbox-audio-capture-latest-script",
-                        "name": "查找最近录音并转写入库",
-                        "type": "UserScript",
-                        "path": "templates/quickadd/scripts/capture-chat-to-inbox.js",
-                        "settings": {
-                            "mode": "capture-latest-audio"
-                        }
-                    }
-                ]
-            },
-            "runOnStartup": false
-        },
-        {
-            "id": "inbox-audio-capture-path",
-            "name": "Inbox - 指定音频入库",
-            "type": "Macro",
-            "command": true,
-            "macro": {
-                "id": "inbox-audio-capture-path-macro",
-                "name": "Inbox - 指定音频入库",
-                "commands": [
-                    {
-                        "id": "inbox-audio-capture-path-script",
-                        "name": "按路径转写音频并入库",
-                        "type": "UserScript",
-                        "path": "templates/quickadd/scripts/capture-chat-to-inbox.js",
-                        "settings": {
-                            "mode": "capture-audio-path"
-                        }
-                    }
-                ]
-            },
-            "runOnStartup": false
-        }
-    ],
+      },
+      "runOnStartup": false
+    },
+    {
+      "id": "inbox-audio-capture-latest",
+      "name": "Inbox - 最近录音入库",
+      "type": "Macro",
+      "command": true,
+      "macro": {
+        "id": "inbox-audio-capture-latest-macro",
+        "name": "Inbox - 最近录音入库",
+        "commands": [
+          {
+            "id": "inbox-audio-capture-latest-script",
+            "name": "查找最近录音并转写入库",
+            "type": "UserScript",
+            "path": "templates/quickadd/scripts/capture-chat-to-inbox.js",
+            "settings": {
+              "mode": "capture-latest-audio"
+            }
+          }
+        ]
+      },
+      "runOnStartup": false
+    },
+    {
+      "id": "inbox-audio-capture-path",
+      "name": "Inbox - 指定音频入库",
+      "type": "Macro",
+      "command": true,
+      "macro": {
+        "id": "inbox-audio-capture-path-macro",
+        "name": "Inbox - 指定音频入库",
+        "commands": [
+          {
+            "id": "inbox-audio-capture-path-script",
+            "name": "按路径转写音频并入库",
+            "type": "UserScript",
+            "path": "templates/quickadd/scripts/capture-chat-to-inbox.js",
+            "settings": {
+              "mode": "capture-audio-path"
+            }
+          }
+        ]
+      },
+      "runOnStartup": false
+    }
+  ],
   "inputPrompt": "single-line",
   "persistInputPromptDrafts": true,
   "useSelectionAsCaptureValue": true,
