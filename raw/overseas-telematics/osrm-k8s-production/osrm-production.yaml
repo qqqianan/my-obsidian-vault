@@ -1,0 +1,298 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fleet-system
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: osrm-map-data-pv
+spec:
+  capacity:
+    storage: 300Gi
+  volumeMode: Filesystem
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+  nfs:
+    server: NFS_SERVER
+    path: NFS_PATH
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: osrm-map-data-pvc
+  namespace: fleet-system
+spec:
+  accessModes: [ReadWriteMany]
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 300Gi
+  storageClassName: ""
+  volumeName: osrm-map-data-pv
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: osrm-map-config
+  namespace: fleet-system
+data:
+  OSM_PBF_URL: "https://download.geofabrik.de/africa/south-africa-latest.osm.pbf"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: osrm-map-publisher
+  namespace: fleet-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: osrm-map-publisher
+  namespace: fleet-system
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["osrm-backend"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: osrm-map-publisher
+  namespace: fleet-system
+subjects:
+  - kind: ServiceAccount
+    name: osrm-map-publisher
+    namespace: fleet-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: osrm-map-publisher
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osrm-backend
+  namespace: fleet-system
+  labels:
+    app: osrm-backend
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  minReadySeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: osrm-backend
+  template:
+    metadata:
+      labels:
+        app: osrm-backend
+      annotations:
+        fleet-system/map-version: bootstrap
+    spec:
+      terminationGracePeriodSeconds: 30
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: osrm-backend
+      containers:
+        - name: osrm-backend
+          image: ghcr.io/project-osrm/osrm-backend:v26.5.0
+          command: ["osrm-routed"]
+          args:
+            - --algorithm
+            - mld
+            - --threads
+            - "4"
+            - --max-matching-size
+            - "1000"
+            - /data/current/combined.osrm
+          ports:
+            - name: http
+              containerPort: 5000
+          resources:
+            requests:
+              cpu: "1"
+              memory: 3Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: map-data
+              mountPath: /data
+              readOnly: true
+      volumes:
+        - name: map-data
+          persistentVolumeClaim:
+            claimName: osrm-map-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: osrm-service
+  namespace: fleet-system
+spec:
+  type: ClusterIP
+  selector:
+    app: osrm-backend
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: osrm-pdb
+  namespace: fleet-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: osrm-backend
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: osrm-map-refresh
+  namespace: fleet-system
+spec:
+  schedule: "0 3 * * *"
+  timeZone: Asia/Singapore
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: osrm-map-publisher
+          restartPolicy: Never
+          initContainers:
+            - name: download-osm
+              image: curlimages/curl:8.12.1
+              env:
+                - name: OSM_PBF_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: osrm-map-config
+                      key: OSM_PBF_URL
+              command: ["sh","-ec"]
+              args:
+                - |
+                  VERSION="$(date -u +%Y%m%dT%H%M%SZ)"
+                  echo "$VERSION" > /work/VERSION
+                  SRC_DIR="/data/sources/$VERSION"
+                  mkdir -p "$SRC_DIR"
+                  curl --fail --location --retry 5 --retry-delay 10 \
+                    --output "$SRC_DIR/combined.osm.pbf.part" \
+                    "$OSM_PBF_URL"
+                  test -s "$SRC_DIR/combined.osm.pbf.part"
+                  mv "$SRC_DIR/combined.osm.pbf.part" "$SRC_DIR/combined.osm.pbf"
+              volumeMounts:
+                - name: map-data
+                  mountPath: /data
+                - name: work
+                  mountPath: /work
+          containers:
+            - name: osrm-builder
+              image: ghcr.io/project-osrm/osrm-backend:v26.5.0
+              command: ["sh","-ec"]
+              args:
+                - |
+                  VERSION="$(cat /work/VERSION)"
+                  SRC="/data/sources/$VERSION/combined.osm.pbf"
+                  BUILD_DIR="/data/versions/$VERSION.building"
+                  FINAL_DIR="/data/versions/$VERSION"
+                  BASE="$BUILD_DIR/combined"
+                  trap 'echo failed > /work/BUILD_FAILED' EXIT
+                  rm -rf "$BUILD_DIR"
+                  mkdir -p "$BUILD_DIR"
+                  osrm-extract -p /opt/car.lua --output "$BASE.osrm" "$SRC"
+                  osrm-partition "$BASE.osrm"
+                  osrm-customize "$BASE.osrm"
+                  osrm-routed --algorithm mld --trial "$BASE.osrm"
+                  echo "$VERSION" > "$BUILD_DIR/VERSION"
+                  date -u +%Y-%m-%dT%H:%M:%SZ > "$BUILD_DIR/BUILD_SUCCESS"
+                  rm -rf "$FINAL_DIR"
+                  mv "$BUILD_DIR" "$FINAL_DIR"
+                  ln -sfn "versions/$VERSION" /data/current.new
+                  mv -Tf /data/current.new /data/current
+                  echo "$VERSION" > /work/BUILD_OK
+                  rm -f /work/BUILD_FAILED
+                  trap - EXIT
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: 8Gi
+                limits:
+                  cpu: "12"
+                  memory: 32Gi
+              volumeMounts:
+                - name: map-data
+                  mountPath: /data
+                - name: work
+                  mountPath: /work
+            - name: rollout-publisher
+              image: curlimages/curl:8.12.1
+              command: ["sh","-ec"]
+              args:
+                - |
+                  while [ ! -f /work/BUILD_OK ]; do
+                    [ -f /work/BUILD_FAILED ] && exit 1
+                    sleep 5
+                  done
+                  VERSION="$(cat /work/BUILD_OK)"
+                  NS="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+                  TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+                  CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  API="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}"
+                  BODY="$(printf '{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"fleet-system/map-version\":\"%s\"}}}}}' "$VERSION")"
+                  curl --fail --silent --show-error \
+                    --cacert "$CACERT" \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    -X PATCH \
+                    "$API/apis/apps/v1/namespaces/$NS/deployments/osrm-backend" \
+                    --data "$BODY"
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+          volumes:
+            - name: map-data
+              persistentVolumeClaim:
+                claimName: osrm-map-data-pvc
+            - name: work
+              emptyDir: {}
