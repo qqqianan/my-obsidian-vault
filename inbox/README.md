@@ -55,4 +55,6 @@ Inbox - 指定音频入库
 
 语音转文字走本地转写工具，大模型只负责总结转写文本。自动化录音入库默认对接 whisper.cpp server 这类 Whisper-compatible HTTP 服务，地址是 `http://127.0.0.1:9000/v1/audio/transcriptions`。如果本地 Whisper 服务不是 9000 端口，在 `secrets/chat-capture.local.json` 里配置 `audioBaseUrl`；如果服务给的是完整转写接口地址，直接填写 `audioTranscriptionsUrl`。
 
+长音频默认会自动切段转写。超过 20 分钟的录音会先切成多个约 12 分钟的片段，再逐段调用 Whisper 接口，避免单次长请求超时；这些阈值可以通过 `audioChunkThresholdSec`、`audioChunkDurationSec` 和 `audioChunkTimeoutMs` 调整。
+
 如果使用 MacWhisper，推荐先在 MacWhisper 中打开录音并导出 `.txt`，再把转写文本录入 inbox；MacWhisper 本身更偏桌面手动工具，不等同于脚本可直接调用的 HTTP 服务。

@@ -70,13 +70,23 @@
   "audioTranscriptionsUrl": "",
   "audioApiKey": "",
   "audioModel": "whisper-1",
-  "audioLanguage": "zh"
+  "audioLanguage": "zh",
+  "audioTimeoutMs": 600000,
+  "audioChunkThresholdSec": 1200,
+  "audioChunkDurationSec": 720,
+  "audioChunkTimeoutMs": 900000
 }
 ```
 
 语音转文字使用本地转写工具，大模型只负责总结转写文本。当前脚本自动化对接的是 whisper.cpp server 这类 Whisper-compatible HTTP 服务，默认地址是 `http://127.0.0.1:9000/v1/audio/transcriptions`。
 
 如果本地 Whisper 服务不是 9000 端口，把 `audioBaseUrl` 改成实际地址，填写到 `/v1` 这一层即可；脚本会自动请求 `/audio/transcriptions`。如果服务直接给完整转写接口地址，可以填 `audioTranscriptionsUrl`。本地服务通常不需要 `audioApiKey`，需要鉴权时再填写。
+
+长音频默认会自动切段转写：当录音超过 `audioChunkThresholdSec` 时，脚本会先用 `ffmpeg` 切成多个片段，再逐段调用 Whisper 接口，最后拼接转写文本。上面的默认值表示：
+
+- 超过 20 分钟开始切段
+- 每段 12 分钟
+- 每段转写最多等 15 分钟
 
 本地转写有两条路线：
 

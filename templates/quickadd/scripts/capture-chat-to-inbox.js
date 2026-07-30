@@ -452,45 +452,213 @@ function copyAudioFile(fs, path, vaultPath, audioAbs, stamp, month) {
 
 async function transcribeAudio(audioAbs, settings, fs, path) {
   try {
-    const env = typeof process !== "undefined" && process.env ? process.env : {};
-    const apiKeyEnv = settings.audioApiKeyEnv || "WHISPER_API_KEY";
-    const baseUrlEnv = settings.audioBaseUrlEnv || "WHISPER_BASE_URL";
+    const durationSec = getAudioDurationSeconds(settings.nodeRequire, audioAbs);
+    const chunkThresholdSec = normalizePositiveNumber(settings.audioChunkThresholdSec, 20 * 60);
+    const shouldChunk = durationSec && durationSec > chunkThresholdSec;
 
-    const model = settings.audioModel || "whisper-1";
-    const transcriptionsUrl = resolveAudioTranscriptionsUrl(settings, env[baseUrlEnv]);
-    const apiKey = settings.audioApiKey || env[apiKeyEnv] || "";
-    const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
-    const fields = [
-      { name: "model", value: model },
-      { name: "response_format", value: settings.audioResponseFormat || "json" },
-    ];
-    if (settings.audioLanguage) {
-      fields.push({ name: "language", value: settings.audioLanguage });
-    }
-    if (settings.audioPrompt) {
-      fields.push({ name: "prompt", value: settings.audioPrompt });
+    if (shouldChunk) {
+      return await transcribeAudioInChunks(audioAbs, settings, fs, path, durationSec);
     }
 
-    const response = await postMultipart(settings.nodeRequire, transcriptionsUrl, {
-      headers,
-      fields,
-      file: {
-        fieldName: "file",
-        filename: path.basename(audioAbs),
-        contentType: contentTypeForAudio(audioAbs),
-        buffer: fs.readFileSync(audioAbs),
-      },
-      timeoutMs: Number(settings.audioTimeoutMs || 10 * 60 * 1000),
-    });
-    if (response.status < 200 || response.status >= 300) {
-      return { status: `audio-http-${response.status}: ${truncate(response.text, 160)}`, text: "" };
-    }
-    const text = (response.json && (response.json.text || response.json.transcript)) || response.text || "";
-    return text.trim()
-      ? { status: `ok (${model})`, text: text.trim() }
-      : { status: "audio-empty-response", text: "" };
+    const single = await transcribeAudioRequest(audioAbs, settings, fs, path);
+    if (single.text || !isRetriableAudioFailure(single.status)) return single;
+
+    return await transcribeAudioInChunks(audioAbs, settings, fs, path, durationSec, single.status);
   } catch (error) {
     return { status: `audio-request-failed: ${error.message || String(error)}`, text: "" };
+  }
+}
+
+async function transcribeAudioRequest(audioAbs, settings, fs, path, timeoutMsOverride) {
+  const env = typeof process !== "undefined" && process.env ? process.env : {};
+  const apiKeyEnv = settings.audioApiKeyEnv || "WHISPER_API_KEY";
+  const baseUrlEnv = settings.audioBaseUrlEnv || "WHISPER_BASE_URL";
+
+  const model = settings.audioModel || "whisper-1";
+  const transcriptionsUrl = resolveAudioTranscriptionsUrl(settings, env[baseUrlEnv]);
+  const apiKey = settings.audioApiKey || env[apiKeyEnv] || "";
+  const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+  const fields = [
+    { name: "model", value: model },
+    { name: "response_format", value: settings.audioResponseFormat || "json" },
+  ];
+  if (settings.audioLanguage) {
+    fields.push({ name: "language", value: settings.audioLanguage });
+  }
+  if (settings.audioPrompt) {
+    fields.push({ name: "prompt", value: settings.audioPrompt });
+  }
+
+  const response = await postMultipart(settings.nodeRequire, transcriptionsUrl, {
+    headers,
+    fields,
+    file: {
+      fieldName: "file",
+      filename: path.basename(audioAbs),
+      contentType: contentTypeForAudio(audioAbs),
+      buffer: fs.readFileSync(audioAbs),
+    },
+    timeoutMs: Number(timeoutMsOverride || settings.audioTimeoutMs || 10 * 60 * 1000),
+  });
+  if (response.status < 200 || response.status >= 300) {
+    return { status: `audio-http-${response.status}: ${truncate(response.text, 160)}`, text: "" };
+  }
+  const text = (response.json && (response.json.text || response.json.transcript)) || response.text || "";
+  return text.trim()
+    ? { status: `ok (${model})`, text: text.trim() }
+    : { status: "audio-empty-response", text: "" };
+}
+
+async function transcribeAudioInChunks(audioAbs, settings, fs, path, durationSec, fallbackReason) {
+  const nodeRequire = settings.nodeRequire;
+  if (!nodeRequire) {
+    return { status: `audio-chunking-unavailable${fallbackReason ? `: ${fallbackReason}` : ""}`, text: "" };
+  }
+
+  const childProcess = nodeRequire("child_process");
+  const os = nodeRequire("os");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "quickadd-audio-"));
+
+  try {
+    const chunkDurationSec = normalizePositiveNumber(settings.audioChunkDurationSec, 12 * 60);
+    const segments = splitAudioForTranscription(childProcess, fs, path, audioAbs, tempDir, chunkDurationSec);
+    if (!segments.length) {
+      return { status: `audio-chunking-empty${fallbackReason ? `: ${fallbackReason}` : ""}`, text: "" };
+    }
+
+    const chunkTimeoutMs = normalizePositiveNumber(
+      settings.audioChunkTimeoutMs,
+      Math.max(Number(settings.audioTimeoutMs || 10 * 60 * 1000), chunkDurationSec * 1000 + 2 * 60 * 1000),
+    );
+    const texts = [];
+    const failedChunks = [];
+
+    for (let index = 0; index < segments.length; index += 1) {
+      const result = await transcribeAudioRequest(segments[index], settings, fs, path, chunkTimeoutMs);
+      if (result.text) {
+        texts.push(result.text.trim());
+      } else {
+        failedChunks.push(`chunk-${String(index + 1).padStart(2, "0")}: ${result.status}`);
+      }
+    }
+
+    const joined = texts.filter(Boolean).join("\n\n");
+    if (!joined) {
+      return {
+        status: `audio-chunked-failed${fallbackReason ? ` (${fallbackReason})` : ""}${failedChunks.length ? `: ${failedChunks.join("; ")}` : ""}`,
+        text: "",
+      };
+    }
+
+    const parts = [
+      `ok-chunked (${segments.length} chunks`,
+      durationSec ? `, ${Math.round(durationSec)}s` : "",
+      fallbackReason ? `, fallback from ${fallbackReason}` : "",
+      failedChunks.length ? `, ${failedChunks.length} failed` : "",
+      ")",
+    ];
+    return {
+      status: parts.join(""),
+      text: joined,
+    };
+  } catch (error) {
+    return { status: `audio-chunking-failed: ${error.message || String(error)}`, text: "" };
+  } finally {
+    removeDirectoryRecursive(fs, path, tempDir);
+  }
+}
+
+function splitAudioForTranscription(childProcess, fs, path, audioAbs, tempDir, chunkDurationSec) {
+  const outputPattern = path.join(tempDir, "chunk-%03d.wav");
+  childProcess.execFileSync(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      audioAbs,
+      "-vn",
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      "-c:a",
+      "pcm_s16le",
+      "-f",
+      "segment",
+      "-segment_time",
+      String(chunkDurationSec),
+      outputPattern,
+    ],
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
+
+  return fs.readdirSync(tempDir)
+    .filter((name) => /^chunk-\d+\.wav$/i.test(name))
+    .sort()
+    .map((name) => path.join(tempDir, name));
+}
+
+function getAudioDurationSeconds(nodeRequire, audioAbs) {
+  try {
+    if (!nodeRequire) return 0;
+    const childProcess = nodeRequire("child_process");
+    const output = childProcess.execFileSync(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        audioAbs,
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    ).trim();
+    const value = Number(output);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function normalizePositiveNumber(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
+function isRetriableAudioFailure(status) {
+  return /timeout|request-failed|audio-empty-response|audio-http-5\d\d/i.test(String(status || ""));
+}
+
+function removeDirectoryRecursive(fs, path, dirAbs) {
+  if (!dirAbs || !fs.existsSync(dirAbs)) return;
+  for (const entry of fs.readdirSync(dirAbs, { withFileTypes: true })) {
+    const abs = path.join(dirAbs, entry.name);
+    if (entry.isDirectory()) {
+      removeDirectoryRecursive(fs, path, abs);
+    } else {
+      try {
+        fs.unlinkSync(abs);
+      } catch (_error) {
+        // Best effort cleanup only.
+      }
+    }
+  }
+  try {
+    fs.rmdirSync(dirAbs);
+  } catch (_error) {
+    // Best effort cleanup only.
   }
 }
 
